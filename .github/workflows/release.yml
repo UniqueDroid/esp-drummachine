@@ -1,0 +1,76 @@
+name: Build and attach firmware release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade pip platformio
+
+      - name: Preinstall project dependencies
+        run: pio pkg install -e cyd-2432s028
+
+      - name: Apply patched WiFiManager files
+        run: |
+          cp third_party/wifimanager-patched/WiFiManager.h .pio/libdeps/cyd-2432s028/WiFiManager/WiFiManager.h
+          cp third_party/wifimanager-patched/WiFiManager.cpp .pio/libdeps/cyd-2432s028/WiFiManager/WiFiManager.cpp
+          cp third_party/wifimanager-patched/wm_strings_en.h .pio/libdeps/cyd-2432s028/WiFiManager/wm_strings_en.h
+
+      - name: Generate build version header
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME}"
+          if [ -z "$version" ]; then
+            version="dev"
+          fi
+          mkdir -p include
+          cat > include/build_version.h <<EOF
+          #pragma once
+          #define BUILD_VERSION "$version"
+          EOF
+
+      - name: Build firmware
+        run: pio run -e cyd-2432s028
+
+      - name: Rename firmware artifact
+        shell: bash
+        run: |
+          cp .pio/build/cyd-2432s028/firmware.bin esp-drummachine-cyd-2432s028-${GITHUB_REF_NAME}.bin
+
+      - name: Prepare web-flasher assets (bootloader/partitions, stable names)
+        shell: bash
+        run: |
+          # Version-agnostic filenames so unique-esp-web-flasher's manifest can
+          # reference them via /releases/latest/download/... without ever
+          # needing an update. Kept separate from the versioned app firmware
+          # asset above, which the device's own OTA updater looks for.
+          cp .pio/build/cyd-2432s028/bootloader.bin esp-drummachine-cyd-2432s028-bootloader.bin
+          cp .pio/build/cyd-2432s028/partitions.bin esp-drummachine-cyd-2432s028-partitions.bin
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            esp-drummachine-cyd-2432s028-${{ github.ref_name }}.bin
+            esp-drummachine-cyd-2432s028-bootloader.bin
+            esp-drummachine-cyd-2432s028-partitions.bin
+          generate_release_notes: true
+          fail_on_unmatched_files: true
